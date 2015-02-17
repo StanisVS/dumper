@@ -91,7 +91,7 @@ void echo (){
 }
 
 void print_usage(){
-    cout<<"Usage : [usage/get host_addr/echo/sync [local_ip[ local_ip...]]]"<<std::endl;
+    cout<<"Usage : [usage/get host_addr/echo"<<std::endl;
 }
 
 int main()
@@ -208,7 +208,10 @@ void print_addrs(vector<sockaddr_in*> &addrs){
 }
 void init(){
     init_addrs();
+    cout<<"\ninterfaces";
     print_addrs(interfaces_ips);
+    cout<<"\nbroadcast ips";
+    print_addrs(broadcasts_addrs);
     pthread_create(&dumper_thread,NULL,dumper,0);
     pthread_create(&echo_thread,NULL,echo_listener,0);
     pthread_create(&sync_thread,NULL,data_listener,0);
