@@ -149,16 +149,16 @@ void process_echo(unsigned char* buffer){
     daddr.sin_addr.s_addr = ip_header->daddr;
 
     if(in_broadcasts(&daddr)){
-        send_sync_request(&daddr);
+        send_sync_request(&saddr);
     }
-
-    send_all_data(&saddr);
 
     string source,dest;
     source = (string) inet_ntoa(saddr.sin_addr);
     dest = (string)  inet_ntoa(daddr.sin_addr);
-
     cout<<"\n udp recieved from "<<source<<" to "<<dest<<"\n";
+    send_all_data(&saddr);
+
+
 }
 
 void * echo_listener (void* arg){
@@ -302,7 +302,7 @@ void send_sync_request(sockaddr_in* addr)
     }
 
     if(sendto(sync_sock,&message,sizeof message,0,(sockaddr*)&with_port,sizeof with_port)==-1){
-        cerr<<"failed to send broadcast";
+        cerr<<"failed to response echo";
     }
     close(sync_sock);
 }
@@ -332,6 +332,7 @@ bool in_broadcasts(sockaddr_in *addr)
 
 void send_all_data(sockaddr_in *addr)
 {
+    cout<<"sending data to"<<inet_ntoa(addr->sin_addr)<<"\n";
     int sock = socket(AF_INET,SOCK_STREAM,0);
     if(sock==-1){
         cerr<<"cant create socket for sending data";
@@ -356,6 +357,7 @@ void send_all_data(sockaddr_in *addr)
         send(sock,&packet.raw_data_length,sizeof packet.raw_data_length,0);
         send(sock,packet.raw_data,packet.raw_data_length,0);
     }
+    cout<<"succeed send\n";
 }
 
 void * data_listener (void* arg){
