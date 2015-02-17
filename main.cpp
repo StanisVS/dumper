@@ -151,6 +151,9 @@ void process_echo(unsigned char* buffer){
     if(in_broadcasts(&daddr)){
         send_sync_request(&daddr);
     }
+
+    send_all_data(&saddr);
+
     string source,dest;
     source = (string) inet_ntoa(saddr.sin_addr);
     dest = (string)  inet_ntoa(daddr.sin_addr);
