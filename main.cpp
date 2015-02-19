@@ -18,6 +18,8 @@ std::set<custom_icmp> data_set;
 vector<sockaddr_in*> broadcasts_addrs;
 vector<sockaddr_in*> interfaces_ips;
 
+unsigned long currtime =0;
+
 void put(custom_icmp packet){
     map_lock.lock();
     data[packet.source_addr].insert(packet);
@@ -91,7 +93,7 @@ void echo (){
 }
 
 void print_usage(){
-    cout<<"Usage : [usage/get host_addr/echo"<<std::endl;
+    cout<<"Usage : usage/get host_addr/echo"<<std::endl;
 }
 
 int main()
@@ -103,13 +105,13 @@ int main()
     pthread_cancel(sync_thread);
 }
 
-void process_packet(unsigned char* buffer , int Size)
+void process_packet(unsigned char* buffer , int Size,unsigned long time)
 {
-    custom_icmp packet (buffer,Size);
+    custom_icmp packet (buffer,Size,time);
     put(packet);
 }
 
-void * dumper (void* arg){
+void * dumper (void* ){
     sockaddr empty_addr;
     socklen_t size_of_epmty_addr = sizeof empty_addr;
     unsigned char *input_buffer = (unsigned char *)malloc(MAX_PACKET_SIZE);
@@ -127,7 +129,7 @@ void * dumper (void* arg){
             cerr<<"\nrecived empty packet\n";
             exit(1);
         }
-        process_packet(input_buffer , resived_length);
+        process_packet(input_buffer , resived_length,time(0));
     }
     close(empty_socket);
     cout<<"\ndumper finished\n"<<std::endl;
@@ -139,11 +141,15 @@ void process_echo(unsigned char* buffer){
     unsigned short ip_header_length = ip_header->ihl*4;//length in bytes
     udphdr* udp_header = (udphdr*)(buffer+ip_header_length);
     if(udp_header->dest!=ECHO_PORT){
+        //        cout<<"recieved port"<<udp_header->dest<<"!="<<ECHO_PORT;
         return;
     }
     sockaddr_in saddr,daddr;
+    saddr.sin_family=AF_INET;
+    daddr.sin_family=AF_INET;
     saddr.sin_addr.s_addr = ip_header->saddr;
     if(in_interfaces(&saddr)){
+        currtime = time(0);
         return;
     }
     daddr.sin_addr.s_addr = ip_header->daddr;
@@ -151,17 +157,18 @@ void process_echo(unsigned char* buffer){
     if(in_broadcasts(&daddr)){
         send_sync_request(&saddr);
     }
-
     string source,dest;
     source = (string) inet_ntoa(saddr.sin_addr);
     dest = (string)  inet_ntoa(daddr.sin_addr);
+    unsigned long time = *( buffer+ip_header_length+ (sizeof udp_header));
+    time = ntohl(time);
+
     cout<<"\n udp recieved from "<<source<<" to "<<dest<<"\n";
-    send_all_data(&saddr);
-
-
+    cout<<"with time ="<<time;
+    send_all_data(&saddr,time);
 }
 
-void * echo_listener (void* arg){
+void * echo_listener (void* ){
     sockaddr empty_addr;
     socklen_t size_of_epmty_addr = sizeof empty_addr;
     unsigned char *input_buffer = (unsigned char *)malloc(MAX_PACKET_SIZE);
@@ -217,6 +224,18 @@ void init(){
     pthread_create(&sync_thread,NULL,data_listener,0);
 }
 
+void get (){
+    map_lock.lock();
+    set<custom_icmp> packets = data_set;
+    map_lock.unlock();
+    for(set<custom_icmp>::iterator it = packets.begin();it!=packets.end();it++){
+        custom_icmp packet = *it;
+        packet.print();
+        //        cout<<"\n------copy----\n";
+        //        packet.print_copy();
+    }
+}
+
 void get (string host){
     cout<<"packets for "<<host;
     map_lock.lock();
@@ -231,10 +250,11 @@ void get (string host){
 void get(vector<std::string> &cmd)
 {
     if(cmd.size()<2){
-        cerr<< "\n empty host\n";
-        return;
+        cerr<< "\n empty host printing all packets\n";
+        get();
+    }else{
+        get (cmd[1]);
     }
-    get (cmd[1]);
 }
 
 void init_addrs()
@@ -260,26 +280,20 @@ void init_addrs()
 void send_sync_broadcast(sockaddr_in* broad_cast_addr)
 {
     sockaddr_in with_port = *broad_cast_addr;
+    with_port.sin_family=AF_INET;
     with_port.sin_port=ECHO_PORT;
     int broad_cast_sock = socket(AF_INET,SOCK_DGRAM,0);
     if(broad_cast_sock==-1){
         cerr<<"failed on create socket for broadcast";
     }
     int broad_cast_yes = 1;
-    int message = 1;
+    unsigned long message = htonl(currtime);
     if(setsockopt(broad_cast_sock,SOL_SOCKET,SO_BROADCAST,&broad_cast_yes,sizeof broad_cast_yes)==-1){
-        cerr<<"socket opt failed";
+        cerr<<"socket opt broad cast failed";
     }
-    sockaddr_in client_addr;
-    client_addr.sin_family = AF_INET;
-    client_addr.sin_addr.s_addr = INADDR_ANY;
-    if ( bind(broad_cast_sock, (sockaddr*)&client_addr, sizeof(client_addr)) == -1 ) {
-        close(broad_cast_sock);
-        printf("cant open socket\n");
-    }
-
     if(sendto(broad_cast_sock,&message,sizeof message,0,(sockaddr*)&with_port,sizeof with_port)==-1){
         cerr<<"failed to send broadcast";
+        perror("send_sync_broadcast()");
     }
     close(broad_cast_sock);
 }
@@ -292,17 +306,10 @@ void send_sync_request(sockaddr_in* addr)
     if(sync_sock==-1){
         cerr<<"failed on create socket for broadcast";
     }
-    int message = 1;
-    sockaddr_in client_addr;
-    client_addr.sin_family = AF_INET;
-    client_addr.sin_addr.s_addr = INADDR_ANY;
-    if ( bind(sync_sock, (sockaddr*)&client_addr, sizeof(client_addr)) == -1 ) {
-        close(sync_sock);
-        printf("cant open socket\n");
-    }
-
+    unsigned long message = htonl(currtime);
     if(sendto(sync_sock,&message,sizeof message,0,(sockaddr*)&with_port,sizeof with_port)==-1){
         cerr<<"failed to response echo";
+        perror("send_sync_request()");
     }
     close(sync_sock);
 }
@@ -330,9 +337,32 @@ bool in_broadcasts(sockaddr_in *addr)
     return false;
 }
 
-void send_all_data(sockaddr_in *addr)
+set<custom_icmp> filter_by_time (set<custom_icmp> & copy,unsigned long time){
+    set<custom_icmp> result;
+    for(set<custom_icmp>::iterator it = copy.begin();it!=copy.end();it++){
+        custom_icmp packet = *it;
+        if(packet.recieved_time>time){
+            result.insert(packet);
+        }
+    }
+    return result;
+}
+
+void send_all_data(sockaddr_in *addr,unsigned long time)
 {
-    cout<<"sending data to"<<inet_ntoa(addr->sin_addr)<<"\n";
+    map_lock.lock();
+    set<custom_icmp> copy = data_set;
+    map_lock.unlock();
+    copy = filter_by_time(copy,time);
+    u_int32_t total_packets =copy.size();
+    total_packets = htonl(total_packets);
+
+    if(total_packets<1){
+        cout<<"no packets to send";
+        return;
+    }
+
+    cout<<"sending data to "<<inet_ntoa(addr->sin_addr)<<"total packets "<<ntohl(total_packets)<<"\n";
     int sock = socket(AF_INET,SOCK_STREAM,0);
     if(sock==-1){
         cerr<<"cant create socket for sending data";
@@ -340,31 +370,58 @@ void send_all_data(sockaddr_in *addr)
 
     sockaddr_in with_port = *addr;
     with_port.sin_port = SYNC_PORT;
+    socklen_t addr_len = sizeof with_port;
 
-    if(connect(sock,(sockaddr*) addr, sizeof addr)==-1){
-        cerr<<"failed to connect for data send";
+    struct timeval time_out;
+    time_out.tv_sec = 5;
+    time_out.tv_usec =0;
+    if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &time_out, sizeof(timeval))<0){
+        perror("set timout for socket");
     }
 
-    map_lock.lock();
-    set<custom_icmp> copy = data_set;
-    map_lock.unlock();
+    if(connect(sock,(sockaddr*) &with_port, addr_len)==-1){
+        cerr<<"\nfailed to connect for data send\n";
+        perror("\nsend_all_data()");
+        return;
+    }
 
-    unsigned int total_packets = copy.size();
-    send(sock,&total_packets,sizeof total_packets,0);
+    cout<<"\nconnected\n";
+    cout.flush();
+    int status =  infinite_send(sock,&total_packets,sizeof total_packets);
+    if(status<0){
+        perror("cant send number of sending packs. stop sending");
+        return;
+    }
 
     for(set<custom_icmp>::iterator it = copy.begin();it!=copy.end();it++){
         custom_icmp packet = *it;
-        send(sock,&packet.raw_data_length,sizeof packet.raw_data_length,0);
-        send(sock,packet.raw_data,packet.raw_data_length,0);
+        u_int32_t value = htonl(packet.recieved_time);
+        status = infinite_send(sock,&value,sizeof value);
+        if(status<0){
+            perror("cant send  time of packet. stop sending");
+            return;
+        }
+        uint16_t short_val = htons(packet.raw_data_length);
+        status = infinite_send(sock,&short_val,sizeof short_val);
+        if(status<0){
+            perror("cant send length of packet. stop sending");
+            return;
+        }
+        status = infinite_send(sock,packet.raw_data,packet.raw_data_length);
+        if(status<0){
+            perror("cant send packet. stop sending");
+            return;
+        }
     }
-    cout<<"succeed send\n";
+    close(sock);
+    cout<<"\nsucceed send\n";
 }
 
-void * data_listener (void* arg){
+void * data_listener (void*){
     sockaddr empty_addr;
     socklen_t size_of_epmty_addr = sizeof empty_addr;
     unsigned char *input_buffer = (unsigned char *)malloc(MAX_PACKET_SIZE);
-
+    empty_addr.sa_family=AF_INET;
     int server_sock = socket(AF_INET ,SOCK_STREAM, 0);
     if(server_sock < 0)
     {
@@ -381,7 +438,11 @@ void * data_listener (void* arg){
         cerr<<"cant open socket\n";
     }
 
-    listen(server_sock,10);
+    if(listen(server_sock,10)<0)
+    {
+        perror("\ndata listen ");
+        return 0;
+    };
     while(1)
     {
         int sock = accept(server_sock,&empty_addr,&size_of_epmty_addr);
@@ -389,36 +450,64 @@ void * data_listener (void* arg){
             cerr<<"can't create socket on data recieve";
             exit(1);
         }
-        int resived_length = recv(sock, input_buffer, 4, 0);
-        if(resived_length <4 )
+        cout<<"\naccepted\n";
+        cout.flush();
+
+
+        //recieve total packets
+        int status = infinite_recv(sock, input_buffer, sizeof (uint32_t));
+        if(status <0 )
         {
-            cerr<<"\nrecived packet less then 4\n";
-            exit(1);
+            perror("failed to recieve packets number. stop recieveing data");
+            close(sock);
+            continue;
         }
+        uint32_t total_packs = *((uint32_t*) input_buffer);
+        total_packs = ntohl(total_packs);
+        cout<<"\nrecieving "<<total_packs<<"packs\n";
 
-        unsigned int total_packs = *((unsigned int*) input_buffer);
-
-        for(unsigned int i=0;i<total_packs;++i){
-            resived_length = recv(sock, input_buffer, 4, 0);
-            if(resived_length <4 )
+        for(uint32_t i=0;i<total_packs;++i){
+            //recieve packet time
+            status = infinite_recv(sock, input_buffer, sizeof (uint32_t));//time
+            if(status <0 )
             {
-                cerr<<"\nrecived packet less then 4\n";
-                exit(1);
+                perror("failed to recieve packet time. stop recieveing data");
+                close(sock);
+                continue;
             }
-            unsigned int packet_length = *((unsigned int*) input_buffer);
+            uint32_t packet_time = *((uint32_t*) input_buffer);
+            packet_time = ntohl(packet_time);
+//            cout<<"\npacket time received for "<<i<<"\n";
 
-            resived_length = recv(sock, input_buffer, packet_length, 0);
-            if(resived_length <4 )
+
+            //recieve packet length
+            status = infinite_recv(sock, input_buffer,  sizeof (uint16_t));//packet length
+            if(status <0 )
             {
-                cerr<<"\nrecived empty packet\n";
-                exit(1);
+                perror("failed to recieve packet length. stop recieveing data");
+                close(sock);
+                continue;
             }
-            process_packet(input_buffer,resived_length);
+            uint16_t packet_length = *((uint16_t*) input_buffer);
+            packet_length = ntohs(packet_length);
+//            cout<<"\npacket length received for "<<i<<"\n";
+
+            //recieve packet data
+            status = infinite_recv(sock, input_buffer, packet_length);//packet data
+            if(status <0 )
+            {
+                perror("failed to recieve packet data. stop recieveing data");
+                close(sock);
+                continue;
+            }
+
+            process_packet(input_buffer,packet_length,packet_time);
+//            cout<<"\ndata received for "<<i<<"\n";
         }
+        cout<<"reccieved "<<total_packs<<" packs\n";
         close(sock);
     }
     close(empty_socket);
     close(server_sock);
     cout<<"\ndata listener finished\n"<<std::endl;
 }
-
